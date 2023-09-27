@@ -51,14 +51,16 @@ def configure_logging(use_tf_stderr=False):
     logging.addLevelName(DEBUG3, 'DEBUG3')
     logging.addLevelName(DUMP_ENV, 'DUMP_ENV')
 
+
+
     class LogFormatter(logging.Formatter):
         default_format = '%(message)s'
         formats = {
             'root': default_format,
             'build': default_format,
-            'prepare': '[{}] %(name)s: %(message)s'.format(os.getpid()),
+            'prepare': f'[{os.getpid()}] %(name)s: %(message)s',
             'cmd': '> %(message)s',
-            '': '%(name)s: %(message)s'
+            '': '%(name)s: %(message)s',
         }
 
         def formatMessage(self, record):
@@ -66,9 +68,10 @@ def configure_logging(use_tf_stderr=False):
             self._style._fmt = self.formats.get(prefix[0], self.formats[''])
             return super().formatMessage(record)
 
-    tf_stderr_fd = 5
+
     log_stream = sys.stderr
     if use_tf_stderr:
+        tf_stderr_fd = 5
         try:
             if os.isatty(tf_stderr_fd):
                 log_stream = os.fdopen(tf_stderr_fd, mode='w')
@@ -152,11 +155,14 @@ def list_files(top_path, log=None):
 
 
 def dataclass(name):
-    typ = type(name, (dict,), {
-        '__getattr__': lambda self, x: self.get(x),
-        '__init__': lambda self, **k: self.update(k),
-    })
-    return typ
+    return type(
+        name,
+        (dict,),
+        {
+            '__getattr__': lambda self, x: self.get(x),
+            '__init__': lambda self, **k: self.update(k),
+        },
+    )
 
 
 def datatree(name, **fields):
@@ -164,16 +170,17 @@ def datatree(name, **fields):
         if v and isinstance(v, str) and v[0] in '"[{':
             try:
                 o = json.loads(v)
-                if isinstance(o, dict):
-                    return dataclass(k)(**o)
-                return o
+                return dataclass(k)(**o) if isinstance(o, dict) else o
             except json.JSONDecodeError:
                 pass
         return v
 
-    return dataclass(name)(**dict(((
-        k, datatree(k, **v) if isinstance(v, dict) else decode_json(k, v))
-        for k, v in fields.items())))
+    return dataclass(name)(
+        **{
+            k: datatree(k, **v) if isinstance(v, dict) else decode_json(k, v)
+            for k, v in fields.items()
+        }
+    )
 
 
 def timestamp_now_ns():
@@ -202,7 +209,7 @@ def yesno_bool(val):
         elif val in ('false', 'no', 'n'):
             return False
         else:
-            raise ValueError("Unsupported value: %s" % val)
+            raise ValueError(f"Unsupported value: {val}")
     return False
 
 
@@ -256,10 +263,10 @@ def update_hash(hash_obj, file_root, file_path):
 
     with open(relative_path, 'rb') as open_file:
         while True:
-            data = open_file.read(1024 * 8)
-            if not data:
+            if data := open_file.read(1024 * 8):
+                hash_obj.update(data)
+            else:
                 break
-            hash_obj.update(data)
 
 
 class ZipWriteStream:
@@ -287,7 +294,7 @@ class ZipWriteStream:
         if self._tmp_filename:
             raise zipfile.BadZipFile("ZipStream object can't be reused")
         self._ensure_base_path(self.filename)
-        self._tmp_filename = '{}.tmp'.format(self.filename)
+        self._tmp_filename = f'{self.filename}.tmp'
         self._log.info("creating '%s' archive", self.filename)
         self._zip = zipfile.ZipFile(self._tmp_filename, "w",
                                     self._compress_type)
@@ -363,8 +370,7 @@ class ZipWriteStream:
             self._log.info("adding: %s", arcname)
         if timestamp is None:
             timestamp = self.timestamp
-        date_time = self._timestamp_to_date_time(timestamp)
-        if date_time:
+        if date_time := self._timestamp_to_date_time(timestamp):
             self._update_zinfo(zinfo, date_time=date_time)
         self._write_zinfo(zinfo, file_path)
 
@@ -456,7 +462,7 @@ class ZipWriteStream:
         st = os.stat(filename)
         isdir = stat.S_ISDIR(st.st_mode)
         mtime = time.localtime(st.st_mtime)
-        date_time = mtime[0:6]
+        date_time = mtime[:6]
         if strict_timestamps and date_time[0] < 1980:
             date_time = (1980, 1, 1, 0, 0, 0)
         elif strict_timestamps and date_time[0] > 2107:
@@ -488,7 +494,7 @@ class ZipWriteStream:
                 return min_zip_ts
             deg = len(str(int(s))) - 9
             if deg < 0:
-                ts = ts * 10 ** deg
+                ts *= 10 ** deg
             return ts
 
         date_time = None
@@ -624,9 +630,7 @@ class BuildPlanManager:
         # runtime value, build command, and content of the build paths
         # because they can have an effect on the resulting archive.
         self._log.debug("Computing content hash on files...")
-        content_hash = generate_content_hash(content_hash_paths,
-                                             log=self._log)
-        return content_hash
+        return generate_content_hash(content_hash_paths, log=self._log)
 
     def plan(self, source_path, query):
         claims = source_path
@@ -778,7 +782,7 @@ class BuildPlanManager:
                 r, w = os.pipe()
                 side_ch = os.fdopen(r)
                 path, script = action[1:]
-                script = "{}\npwd >&{}".format(script, w)
+                script = f"{script}\npwd >&{w}"
 
                 p = subprocess.Popen(script, shell=True, cwd=path,
                                      pass_fds=(w,))
@@ -827,8 +831,9 @@ def install_pip_requirements(query, requirements_file):
         if docker_image:
             ok = False
             while True:
-                output = check_output(docker_image_id_command(docker_image))
-                if output:
+                if output := check_output(
+                    docker_image_id_command(docker_image)
+                ):
                     docker_image_tag_id = output.decode().strip()
                     log.debug("DOCKER TAG ID: %s -> %s",
                               docker_image, docker_image_tag_id)
@@ -863,18 +868,21 @@ def install_pip_requirements(query, requirements_file):
             elif OSX:
                 # Workaround for OSX when XCode command line tools'
                 # python becomes the main system python interpreter
-                os_path = '{}:/Library/Developer/CommandLineTools' \
-                          '/usr/bin'.format(os.environ['PATH'])
+                os_path = f"{os.environ['PATH']}:/Library/Developer/CommandLineTools/usr/bin"
                 subproc_env = os.environ.copy()
                 subproc_env['PATH'] = os_path
 
         # Install dependencies into the temporary directory.
         with cd(temp_dir):
             pip_command = [
-                python_exec, '-m', 'pip',
-                'install', '--no-compile',
-                '--prefix=', '--target=.',
-                '--requirement={}'.format(requirements_filename),
+                python_exec,
+                '-m',
+                'pip',
+                'install',
+                '--no-compile',
+                '--prefix=',
+                '--target=.',
+                f'--requirement={requirements_filename}',
             ]
             if docker:
                 with_ssh_agent = docker.with_ssh_agent
@@ -887,7 +895,7 @@ def install_pip_requirements(query, requirements_file):
                         pip_cache_dir = os.path.abspath(os.path.join(
                             working_dir, artifacts_dir, 'cache/pip'))
 
-                chown_mask = '{}:{}'.format(os.getuid(), os.getgid())
+                chown_mask = f'{os.getuid()}:{os.getgid()}'
                 shell_command = [shlex_join(pip_command), '&&',
                                  shlex_join(['chown', '-R',
                                              chown_mask, '.'])]
@@ -957,13 +965,10 @@ def docker_run_command(build_root, command, runtime,
         docker_cmd.append('-it')
 
     bind_path = os.path.abspath(build_root)
-    docker_cmd.extend(['-v', "{}:/var/task:z".format(bind_path)])
+    docker_cmd.extend(['-v', f"{bind_path}:/var/task:z"])
 
     home = os.environ['HOME']
-    docker_cmd.extend([
-        # '-v', '{}/.ssh/id_rsa:/root/.ssh/id_rsa:z'.format(home),
-        '-v', '{}/.ssh/known_hosts:/root/.ssh/known_hosts:z'.format(home),
-    ])
+    docker_cmd.extend(['-v', f'{home}/.ssh/known_hosts:/root/.ssh/known_hosts:z'])
 
     if ssh_agent:
         if platform.system() == 'Darwin':
@@ -976,20 +981,22 @@ def docker_run_command(build_root, command, runtime,
             ])
         elif platform.system() == 'Linux':
             sock = os.environ['SSH_AUTH_SOCK']  # TODO: Handle missing env var
-            docker_cmd.extend([
-                '-v', '{}:/tmp/ssh_sock:z'.format(sock),
-                '-e', 'SSH_AUTH_SOCK=/tmp/ssh_sock',
-            ])
+            docker_cmd.extend(
+                [
+                    '-v',
+                    f'{sock}:/tmp/ssh_sock:z',
+                    '-e',
+                    'SSH_AUTH_SOCK=/tmp/ssh_sock',
+                ]
+            )
 
     if platform.system() == 'Linux':
         if pip_cache_dir:
             pip_cache_dir = os.path.abspath(pip_cache_dir)
-            docker_cmd.extend([
-                '-v', '{}:/root/.cache/pip:z'.format(pip_cache_dir),
-            ])
+            docker_cmd.extend(['-v', f'{pip_cache_dir}:/root/.cache/pip:z'])
 
     if not image:
-        image = 'lambci/lambda:build-{}'.format(runtime)
+        image = f'lambci/lambda:build-{runtime}'
 
     docker_cmd.append(image)
 
@@ -1058,7 +1065,7 @@ def prepare_command(args):
     content_hash = content_hash.hexdigest()
 
     # Generate a unique filename based on the hash.
-    filename = os.path.join(artifacts_dir, '{}.zip'.format(content_hash))
+    filename = os.path.join(artifacts_dir, f'{content_hash}.zip')
 
     # Compute timestamp trigger
     was_missing = False
@@ -1085,8 +1092,7 @@ def prepare_command(args):
         build_data['docker'] = docker
 
     build_plan = json.dumps(build_data)
-    build_plan_filename = os.path.join(artifacts_dir,
-                                       '{}.plan.json'.format(content_hash))
+    build_plan_filename = os.path.join(artifacts_dir, f'{content_hash}.plan.json')
     if not os.path.exists(artifacts_dir):
         os.makedirs(artifacts_dir, exist_ok=True)
     with open(build_plan_filename, 'w') as f:
@@ -1124,10 +1130,7 @@ def build_command(args):
     build_plan = query.build_plan
     _timestamp = args.zip_file_timestamp
 
-    timestamp = 0
-    if _timestamp.isnumeric():
-        timestamp = int(_timestamp)
-
+    timestamp = int(_timestamp) if _timestamp.isnumeric() else 0
     if os.path.exists(filename) and not args.force:
         log.info('Reused: %s', shlex.quote(filename))
         return
